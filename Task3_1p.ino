@@ -1,78 +1,91 @@
-#include <Wire.h>           // Include the Wire library for I2C communication
-#include <BH1750.h>         // Include the BH1750 library for using the light sensor
-#include <WiFiNINA.h>       // Include the WiFiNINA library for WiFi capabilities
+#include <WiFiNINA.h>  // Include the library for WiFi support on Arduino Nano 33 IoT
+#include <BH1750.h>    // Include the library for the BH1750 light sensor
+#include <Wire.h>      // Include the library for I2C communication, used by BH1750
 
-// WiFi network credentials
-const char* ssid = "Redmi 12 5G";        // WiFi SSID (network name)
-const char* password = "varsha0654";     // WiFi password
+// WiFi credentials
+const char* ssid     = "Redmi 12 5G";      //  WiFi network name
+const char* password = "varsha0654";  //  WiFi network password
 
 // IFTTT Webhook settings
-const char* host = "maker.ifttt.com";            // Hostname for the IFTTT Webhook
-const char* eventSunlightHit = "sunlight_hit";   // Event name to trigger on IFTTT
-const char* apiKey = "n4LeNWblS78T5cGpV-ALEi4zTC9062PM0NPvMbmNqRx";  // API Key for IFTTT Webhook
+const char* host = "maker.ifttt.com";    // IFTTT server address
+const char* event = "sunlight_hit";    // Event name to trigger on IFTTT
+const char* key = "n4LeNWblS78T5cGpV-ALEi4zTC9062PM0NPvMbmNqRx";      // IFTTT Webhook key
+const int httpsPort = 80;                // HTTP port (use 443 for HTTPS)
 
+// Light sensor
 BH1750 lightMeter;  // Create an instance of the BH1750 light sensor
 
-void setup() {
-  Serial.begin(9600);   // Start serial communication at 9600 baud
-  Wire.begin();         // Initialize the I2C communication
-  lightMeter.begin();   // Initialize the BH1750 light sensor
+// Control variables
+bool sunlightCurrently = false;  // Flag to track current sunlight status
+bool lastSunlightState = false;  // Flag to track last sunlight status for change detection
 
-  // Initialize WiFi
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(ssid, password);  // Connect to the WiFi network
+void setup() {
+  Serial.begin(9600);  // Start serial communication at 9600 baud rate
+  Wire.begin();        // Initialize the I2C communication
+  lightMeter.begin();  // Initialize the BH1750 light sensor
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);  // Start connecting to WiFi network
   while (WiFi.status() != WL_CONNECTED) {  // Wait until connected
-    delay(500);  // Delay to allow time for connecting
-    Serial.print(".");
+    delay(500);  // Wait for 500 milliseconds
+    Serial.print(".");  // Print dots on the serial monitor to indicate waiting
   }
-  Serial.println("\nWiFi connected");  // Print a confirmation once connected
+  Serial.println("Connected to WiFi");  // Print connection status
 }
 
 void loop() {
-  float lux = lightMeter.readLightLevel();  // Read the light level in lux from the BH1750 sensor
-  Serial.println("Light: " + String(lux) + " lux");  // Print the light level to the serial monitor
+  float lux = lightMeter.readLightLevel();  // Read light level in lux from the BH1750 sensor
+  Serial.print("\nLight: ");
+  Serial.print(lux);
+  Serial.println(" lux");  // Print the light level to the serial monitor
 
-  if (lux > 1000) {  // Check if the light level exceeds 1000 lux
-    sendNotification(eventSunlightHit, lux);  // Send a notification if the light level is above the threshold
-  }
+  sunlightCurrently = (lux > 1000);  // Check if the current light level exceeds the sunlight threshold
 
-  delay(10000);  // Delay for 10 seconds before the next reading
-}
-
-void sendNotification(const char* eventName, float lux) {
-  WiFiClient client;  // Create a WiFi client to send data
-  const int httpPort = 80;  // HTTP port to use for the connection
-  if (!client.connect(host, httpPort)) {  // Attempt to connect to the server
-    Serial.println("Connection failed");  // Print an error message if the connection fails
-    return;
-  }
-
-  // Construct the URL for the GET request
-  String url = "/trigger/";
-  url += eventName;
-  url += "/with/key/";
-  url += apiKey;
-  url += "?value1=" + String(lux);  // Append the light level as a query parameter
-
-  // Send the HTTP GET request
-  client.println("GET " + url + " HTTP/1.1");
-  client.println("Host: " + String(host));
-  client.println("Connection: close");
-  client.println();  // End of headers
-
-  unsigned long timeout = millis();  // Timeout for the response
-  while (client.available() == 0) {
-    if (millis() - timeout > 5000) {  // Check if no response is received within 5 seconds
-      Serial.println("Client Timeout !");
-      client.stop();  // Stop the client if timeout
-      return;
+  // Check if the sunlight exposure status has changed
+  if (sunlightCurrently != lastSunlightState) {
+    if (sunlightCurrently) {
+      Serial.println("Sunlight started.");
+      sendNotification("Sunlight started");  // Send notification for sunlight start
+    } else {
+      Serial.println("Sunlight stopped.");
+      sendNotification("Sunlight stopped");  // Send notification for sunlight stop
     }
+    lastSunlightState = sunlightCurrently;  // Update the last known state
   }
 
-  // Read and print the server response
-  while (client.available()) {
-    String line = client.readStringUntil('\r');  // Read each line from the response
-    Serial.print(line);  // Print the line to the serial monitor
+  delay(60000);  // Delay for 1 minute before next check
+}
+
+void sendNotification(String message) {
+  WiFiClient client;  // Create a WiFiClient to send data
+  if (client.connect(host, httpsPort)) {  // Connect to the IFTTT Webhook URL
+    String jsonPayload = "{\"value1\":\"" + message + "\"}";  // Create JSON payload
+    Serial.println("Sending notification...");
+
+    // Start forming the HTTP POST request
+    client.println("POST /trigger/" + String(event) + "/with/key/" + String(key) + " HTTP/1.1");
+    client.println("Host: " + String(host));
+    client.println("Content-Type: application/json");
+    client.println("Content-Length: " + String(jsonPayload.length()));
+    client.println();
+    client.print(jsonPayload);
+
+    // Wait for the server's response
+    while (client.connected()) {
+      String line = client.readStringUntil('\n');
+      if (line == "\r") {
+        Serial.println("Headers received");  // Indicate headers have been received
+        break;
+      }
+    }
+    while (client.available()) {
+      char c = client.read();  // Read the response body
+      Serial.write(c);
+    }
+    client.stop();  // Stop the client
+  } else {
+    Serial.println("Connection to IFTTT failed.");  // Error if connection failed
   }
 }
+
 
